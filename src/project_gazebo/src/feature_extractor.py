@@ -4,7 +4,8 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
-
+from scipy.linalg import svd
+import time
 # intialize the node
 rospy.init_node("feature_extractor_node")
 ini_image_obtained = False
@@ -52,6 +53,50 @@ def shi_tomasi(image):
 
     return image
 
+def findFundamentalMatrix(go, gn): # short for good_old and good new
+    # We know that fundamental matrix has to satisfy
+    # x2.transpose() * F * x1 = 0
+    # we have 8 such points and thus on expanding for anyone we will have  a linear equation
+    # concatenating 8 such equations will give as A*f_vector = 0
+    # whose solution would be the last vector in the V matrix of svd of A = UDV.tranpose()
+
+    """
+    NOTE that we are using cv2 optical flow features are good and thus don't need RANSAC algorithm
+    if time permits we will find good features from RANSAC
+    """
+    A = np.array([[go[0,0]*gn[0,0] , go[0,1]*gn[0,0], 1*gn[0,0],
+                  go[0,0]*gn[0,1] , go[0,1]*gn[0,0], 1*gn[0,0],
+                  go[0,0] , go[0,1], 1]])
+
+    for i in range(1,8):
+        dummy = np.array([[go[i,0]*gn[i,0] , go[i,1]*gn[i,0], 1*gn[i,0],
+                          go[i,0]*gn[i,1] , go[i,1]*gn[i,0], 1*gn[i,0],
+                          go[i,0] , go[i,1], 1]])
+        A = np.concatenate((A,dummy),axis=0)
+
+    # find the svd of this A
+    U, S,VT = svd(A)
+    #create the sigma matrix
+    Sigma = np.zeros((A.shape[0], A.shape[1])) #same size as A
+    Sigma[:A.shape[0],:A.shape[0]] = np.diag(S)
+
+    f_vector = VT.transpose()[:,-1]
+    F = np.reshape(f_vector,(3,3))
+
+    # before sending this F we need to perform SVD cleanup
+    # find the svd of this A
+    U, S,VT = svd(F)
+    #create the sigma matrix
+    Sigma = np.zeros((F.shape[0], F.shape[1])) #same size as A
+    Sigma[:F.shape[0],:F.shape[0]] = np.diag(S)
+    # need to make last row zero
+    Sigma[2,0] = 0
+    Sigma[2,1] = 0
+    Sigma[2,2] = 0
+
+    F = U.dot(Sigma.dot(VT))
+    print(np.linalg.matrix_rank(F))
+    return F
 
 def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
     #we know that image width is 640, so every pixel
@@ -61,7 +106,7 @@ def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
         # creating mask
         mask = np.zeros_like(fin_image)
         #draw the tracks
-        for i, (new, old) in enumerate(zip(good_new[:9,:], good_old[:9,:])):
+        for i, (new, old) in enumerate(zip(good_new, good_old)):
             a, b = new.ravel()
             c, d = old.ravel()
             mask = cv2.line(mask, (int(c),int(d)), (int(a+640),int(b)),color[i].tolist(), 2)
@@ -103,18 +148,12 @@ def image_cb(msg):
         plot images side by side
         """
         plot_side_by_side(prev_frame, cv_image, good_old, good_new)
+        if good_old.shape[0]>8:
+            F = findFundamentalMatrix(good_old, good_new)
+            """
+            Now I can do point triangulation to find R and t in an unambiguous manner
+            """
 
-        #draw the tracks
-        # for i, (new, old) in enumerate(zip(good_new, good_old)):
-        #     a, b = new.ravel()
-        #     c, d = old.ravel()
-        #     mask = cv2.line(mask, (a,b), (c,d), color[i].tolist(), 2)
-        #     cv_image = cv2.circle(cv_image, (a,b), 5, color[i].tolist(), -1)
-        # img = cv2.add(cv_image, mask)
-
-
-        # cv2.imshow("current frame", img)
-        # cv2.waitKey(3)
 
         #now update the previous frame and previous points
         gray_prev = gray_current.copy()
