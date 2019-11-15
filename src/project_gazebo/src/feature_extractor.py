@@ -22,6 +22,10 @@ lk_params = dict(winSize = (15,15),
                 maxLevel = 2,
                 criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
+# camera calibration matrix
+K_calib = np.array([[554.3827128226441, 0.0, 320.5],
+                    [0.0, 554.3827128226441, 240.5],
+                    [0.0, 0.0, 1.0]])
 #create some random colors
 color = np.random.randint(0, 255, (100, 3))
 
@@ -52,6 +56,14 @@ def shi_tomasi(image):
         cv2.circle(image,(x,y),3,[255,255,0],-1)
 
     return image
+
+def findFundamentalMatrix2(pt1, pt2):
+    F, mask = cv2.findFundamentalMat(
+            pt1,
+            pt2,
+            cv2.FM_RANSAC
+        )
+    return F
 
 def findFundamentalMatrix(go, gn): # short for good_old and good new
     # We know that fundamental matrix has to satisfy
@@ -95,8 +107,17 @@ def findFundamentalMatrix(go, gn): # short for good_old and good new
     Sigma[2,2] = 0
 
     F = U.dot(Sigma.dot(VT))
-    print(np.linalg.matrix_rank(F))
+    # print("F is: {}".format(F))
     return F
+
+def extractRtFromF(F):
+    # steo 1 is to cimpute the Essential matrix
+    E = K_calib.T.dot(F.dot(K_calib))
+    # we will find svd of E next
+    U, S,VT = svd(E)
+    # then translation vector is
+    t = U[:,-1] # but this can be positive or negative
+    print(t)
 
 def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
     #we know that image width is 640, so every pixel
@@ -149,11 +170,12 @@ def image_cb(msg):
         """
         plot_side_by_side(prev_frame, cv_image, good_old, good_new)
         if good_old.shape[0]>8:
-            F = findFundamentalMatrix(good_old, good_new)
+            # F = findFundamentalMatrix(good_old, good_new)
+            F = findFundamentalMatrix2(pt_prev, pt_curr)
+            extractRtFromF(F)
             """
             Now I can do point triangulation to find R and t in an unambiguous manner
             """
-
 
         #now update the previous frame and previous points
         gray_prev = gray_current.copy()
