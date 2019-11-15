@@ -52,6 +52,25 @@ def shi_tomasi(image):
 
     return image
 
+
+def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
+    #we know that image width is 640, so every pixel
+    if(good_old.shape[0]>8):
+        fin_image = cv2.hconcat([prev_frame, cv_image])
+
+        # creating mask
+        mask = np.zeros_like(fin_image)
+        #draw the tracks
+        for i, (new, old) in enumerate(zip(good_new[:9,:], good_old[:9,:])):
+            a, b = new.ravel()
+            c, d = old.ravel()
+            mask = cv2.line(mask, (int(c),int(d)), (int(a+640),int(b)),color[i].tolist(), 2)
+            fin_image = cv2.circle(fin_image, (int(c),int(d)), 5, color[i].tolist(), -1)
+        fin_image = cv2.add(fin_image, mask)
+
+        cv2.imshow("combined", fin_image)
+        cv2.waitKey(3)
+
 def image_cb(msg):
     global ini_image_obtained, prev_frame
     """
@@ -65,7 +84,7 @@ def image_cb(msg):
     if not ini_image_obtained:
         ini_image_obtained = True
     else:
-        cv2.imshow("Prev frame", prev_frame)
+        # cv2.imshow("Prev frame", prev_frame)
         # we will take the first frame and find corners in it
         gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         gray_current = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
@@ -76,21 +95,26 @@ def image_cb(msg):
         mask = np.zeros_like(prev_frame)
         #lets calculate optical flow now
         pt_curr, st, err = cv2.calcOpticalFlowPyrLK(gray_prev, gray_current, pt_prev, None, **lk_params)
-        print(pt_prev[0,:,:], pt_curr[0,:,:])
+
         #selet good points
         good_new = pt_curr[st==1]
         good_old = pt_prev[st==1]
+        """
+        plot images side by side
+        """
+        plot_side_by_side(prev_frame, cv_image, good_old, good_new)
 
         #draw the tracks
-        for i, (new, old) in enumerate(zip(good_new, good_old)):
-            a, b = new.ravel()
-            c, d = old.ravel()
-            mask = cv2.line(mask, (a,b), (c,d), color[i].tolist(), 2)
-            cv_image = cv2.circle(cv_image, (a,b), 5, color[i].tolist(), -1)
-        img = cv2.add(cv_image, mask)
+        # for i, (new, old) in enumerate(zip(good_new, good_old)):
+        #     a, b = new.ravel()
+        #     c, d = old.ravel()
+        #     mask = cv2.line(mask, (a,b), (c,d), color[i].tolist(), 2)
+        #     cv_image = cv2.circle(cv_image, (a,b), 5, color[i].tolist(), -1)
+        # img = cv2.add(cv_image, mask)
 
-        cv2.imshow("current frame", img)
-        cv2.waitKey(3)
+
+        # cv2.imshow("current frame", img)
+        # cv2.waitKey(3)
 
         #now update the previous frame and previous points
         gray_prev = gray_current.copy()
