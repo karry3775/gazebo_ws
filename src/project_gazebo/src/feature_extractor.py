@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 import rospy
 from sensor_msgs.msg import Image
+from sensor_msgs.msg import Imu
+from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
 from scipy.linalg import svd
 import time
+import matplotlib.pyplot as plt
+import math as m
 # intialize the node
 rospy.init_node("feature_extractor_node")
 ini_image_obtained = False
@@ -27,7 +31,27 @@ K_calib = np.array([[554.3827128226441, 0.0, 320.5],
                     [0.0, 554.3827128226441, 240.5],
                     [0.0, 0.0, 1.0]])
 #create some random colors
-color = np.random.randint(0, 255, (100, 3))
+color = np.random.randint(0, 255, (500, 3))
+
+#define global state and Projection matrix P = [R,t] (3x4)
+Projection_mat_homo = np.array([[1,0,0,0],
+                                [0,1,0,0],
+                                [0,0,1,0],
+                                [0,0,0,1]])
+
+statex = []
+statey = []
+state_theta = []
+
+origx = []
+origy = []
+
+def update(x,y,theta,v,w):
+    dt = 0.1
+    x = x + v*m.cos(theta)*dt
+    y = y + v*m.sin(theta)*dt
+    theta = theta + w*dt
+    return([x,y,theta])
 
 def harris_corner(image):
     # convert the image to gray scale
@@ -58,6 +82,9 @@ def shi_tomasi(image):
     return image
 
 def findFundamentalMatrix2(pt1, pt2):
+    """
+    cv2 implementation that uses RANSAC method
+    """
     F, mask = cv2.findFundamentalMat(
             pt1,
             pt2,
@@ -110,14 +137,36 @@ def findFundamentalMatrix(go, gn): # short for good_old and good new
     # print("F is: {}".format(F))
     return F
 
-def extractRtFromF(F):
+def extractRtFromF(F, pt_prev, pt_curr):
+    global statex, statey, Projection_mat_homo
     # steo 1 is to cimpute the Essential matrix
     E = K_calib.T.dot(F.dot(K_calib))
     # we will find svd of E next
     U, S,VT = svd(E)
-    # then translation vector is
-    t = U[:,-1] # but this can be positive or negative
-    print(t)
+
+    # now we need to see if we can extract R and t from here
+    points, R, t, mask = cv2.recoverPose(E, pt_prev, pt_curr)
+    print("R is {}".format(R))
+    print("t is {}".format(t))
+
+    # now I have my R and t, I need to plot the trajectory
+    Projection_mat = np.hstack((R,t))
+    Projection_mat = np.vstack((Projection_mat,[0,0,0,1]))
+    Projection_mat_homo = Projection_mat_homo.dot(Projection_mat)
+
+    #lets plot the last column which is the T
+    # print(Projection_mat_homo)
+    x = Projection_mat_homo[0,3] #/ Projection_mat_homo[2,3]
+    y = Projection_mat_homo[1,3] #/ Projection_mat_homo[2,3]
+    statex.append(x)
+    statey.append(y)
+
+    sintht = Projection_mat_homo[1,0]
+    costht = Projection_mat_homo[0,0]
+    theta = m.atan2(sintht, costht)
+
+    state_theta.append(m.degrees(theta))
+    print(Projection_mat_homo)
 
 def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
     #we know that image width is 640, so every pixel
@@ -137,8 +186,23 @@ def plot_side_by_side(prev_frame, cv_image, good_old, good_new):
         cv2.imshow("combined", fin_image)
         cv2.waitKey(3)
 
+def plot_all(prev_frame, cv_image, pt_prev, pt_curr):
+    fin_image = cv2.hconcat([prev_frame, cv_image])
+    # creating mask
+    mask = np.zeros_like(fin_image)
+    #draw the tracks
+    for i, (new, old) in enumerate(zip(pt_curr, pt_prev)):
+        a, b = new.ravel()
+        c, d = old.ravel()
+        mask = cv2.line(mask, (int(c),int(d)), (int(a+640),int(b)),color[i].tolist(), 2)
+        fin_image = cv2.circle(fin_image, (int(c),int(d)), 5, color[i].tolist(), -1)
+    fin_image = cv2.add(fin_image, mask)
+
+    cv2.imshow(" all", fin_image)
+    cv2.waitKey(3)
+
 def image_cb(msg):
-    global ini_image_obtained, prev_frame
+    global ini_image_obtained, prev_frame, Projection_mat_homo, statex, statey, state_theta, origx , origy
     """
     need to store prev frame
     """
@@ -168,19 +232,50 @@ def image_cb(msg):
         """
         plot images side by side
         """
-        plot_side_by_side(prev_frame, cv_image, good_old, good_new)
-        if good_old.shape[0]>8:
-            # F = findFundamentalMatrix(good_old, good_new)
+        # plot_side_by_side(prev_frame, cv_image, good_old, good_new)
+        plot_all(prev_frame, cv_image, pt_prev, pt_curr)
+
+        if good_new.shape[0] > 8:
+            """
+            this means that although I am going to capture transformation between the two frames
+            I wont be getting enough features every time
+            so I am basically skipping some frames
+            """
             F = findFundamentalMatrix2(pt_prev, pt_curr)
-            extractRtFromF(F)
+            extractRtFromF(F, pt_prev, pt_curr)
+        else:
             """
-            Now I can do point triangulation to find R and t in an unambiguous manner
+            I need to update based on imu data and/or odom data
             """
+            # imu_data = rospy.wait_for_message('/pioneer2dx/imu', Imu)
+            odom_data = rospy.wait_for_message('/pioneer2dx/odom', Odometry)
+            x_vel = odom_data.twist.twist.linear.x
+            yaw_rate = odom_data.twist.twist.angular.z
+            #last Projection_mat_homo would be correct
+            #need to extract x_prev, y_prev and theta_prev from it
+            x_prev = Projection_mat_homo[0,3]
+            y_prev = Projection_mat_homo[1,3]
+            sintht = Projection_mat_homo[1,0]
+            costht = Projection_mat_homo[0,0]
+            theta_prev = m.atan2(sintht, costht)
+            #
+            x,y,theta = update(x_prev, y_prev, theta_prev, x_vel, yaw_rate)
+            Projection_mat_homo = np.array([[m.cos(theta),-m.sin(theta),0,x],
+                                                                  [m.sin(theta),m.cos(theta),0,y],
+                                                                  [0,0,1,1],
+                                                                  [0,0,0,1]])
+            statex.append(x)
+            statey.append(y)
+            state_theta.append(theta)
 
         #now update the previous frame and previous points
         gray_prev = gray_current.copy()
         pt_prev = good_new.reshape(-1, 1, 2)
     prev_frame =  cv_image
+    odom_data = rospy.wait_for_message('/pioneer2dx/odom', Odometry)
+    origx.append(odom_data.pose.pose.position.x)
+    origy.append(odom_data.pose.pose.position.y)
+
 
 def camera_feed_sub():
     rospy.Subscriber('/pioneer2dx/pioneer2dx/camera/image_raw',Image,image_cb)
@@ -189,5 +284,8 @@ if __name__ == "__main__":
     try:
         camera_feed_sub()
         rospy.spin()
+        plt.plot(statex,statey,'c-')
+        plt.plot(origx, origy,'g-')
+        plt.show()
     except rospy.ROSInterruptException:
         pass

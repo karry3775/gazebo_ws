@@ -9,7 +9,7 @@ rate = rospy.Rate(10)
 cmd = Twist()
 
 def publish_vel():
-    cmd.linear.x = 0.5
+    cmd.linear.x = 0.5 #0.0
     cmd.angular.z = -0.25
 
     while not rospy.is_shutdown():
